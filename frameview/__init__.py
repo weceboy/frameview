@@ -1,4 +1,4 @@
-"""Frameview: transcript-aware video frame selection."""
+"""Frameview: transcript-aware video frame selection and understanding."""
 
 from .models import AnalysisManifest, AnalysisMode, FrameCandidate, TranscriptSegment
 from .pipeline import analyze_video
@@ -11,4 +11,4 @@ __all__ = [
     "analyze_video",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
