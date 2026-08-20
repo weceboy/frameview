@@ -48,14 +48,24 @@ def keyframes(path: str | Path) -> list[float]:
 
 
 def scene_change_times(path: str | Path, threshold: float = 0.34) -> list[float]:
-    # FFmpeg's scene score is metadata produced by the `select` filter.
-    # We sample only frames that cross the configured threshold and retain timestamps.
-    output = _run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
-        "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-"
-    ])
+    # showinfo writes to stderr, so scene detection needs a separate capture path.
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "info", "-i", str(path),
+                "-vf", f"select='gt(scene,{threshold})',showinfo", "-an", "-f", "null", "-",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Required executable not found: ffmpeg") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(exc.stderr.strip() or "Scene detection failed") from exc
+
     times: list[float] = []
-    for line in output.splitlines():
+    for line in result.stderr.splitlines():
         marker = "pts_time:"
         if marker in line:
             raw = line.split(marker, 1)[1].split()[0]
