@@ -1,0 +1,14 @@
+services:
+  frameview:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      FRAMEVIEW_SERVER_API_KEY: ${FRAMEVIEW_SERVER_API_KEY:-}
+      FRAMEVIEW_API_KEY: ${FRAMEVIEW_API_KEY:-}
+      FRAMEVIEW_WORKERS: ${FRAMEVIEW_WORKERS:-2}
+    volumes:
+      - frameview-data:/data/jobs
+
+volumes:
+  frameview-data:
