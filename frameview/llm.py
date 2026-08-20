@@ -24,7 +24,7 @@ def _image_data_url(path: str | Path) -> str:
 def _frame_context(frames: Iterable[FrameCandidate]) -> list[dict]:
     result: list[dict] = []
     for frame in frames:
-        item = {"timestamp": frame.timestamp, "reasons": frame.reasons}
+        item = {"timestamp": frame.timestamp, "reasons": frame.reason}
         if frame.path:
             item["image"] = _image_data_url(frame.path)
         result.append(item)
