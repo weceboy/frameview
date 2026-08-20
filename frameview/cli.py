@@ -8,6 +8,7 @@ from pathlib import Path
 from .llm import analyze_manifest
 from .models import AnalysisMode
 from .pipeline import analyze_video
+from .select import deduplicate_frames
 from .video import extract_frames
 
 
@@ -38,6 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     understand.add_argument("--endpoint", default="https://api.openai.com/v1/chat/completions")
     understand.add_argument("--model", default="gpt-4.1-mini")
     understand.add_argument("--max-frames", type=int)
+    understand.add_argument("--dedupe-distance", type=int, default=12)
     understand.add_argument("--frame-dir", default=".frameview/frames")
     understand.add_argument("--instruction", default="Create a precise analysis of the video. Explain the main ideas, important visual moments, and how the visuals relate to what is being said. Preserve timestamps when useful.")
 
@@ -81,6 +83,10 @@ def _cmd_understand(args: argparse.Namespace) -> int:
     )
     output_dir = Path(args.frame_dir)
     extract_frames(args.video, manifest.frames, output_dir)
+    before = len(manifest.frames)
+    manifest.frames = deduplicate_frames(manifest.frames, max_distance=args.dedupe_distance)
+    manifest.metadata["frames_before_dedupe"] = before
+    manifest.metadata["frames_after_dedupe"] = len(manifest.frames)
     result = analyze_manifest(
         manifest,
         api_key=args.api_key,
