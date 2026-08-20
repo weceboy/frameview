@@ -1,94 +1,136 @@
 # frameview
 
-A local-first video understanding pipeline inspired by the architecture described in the accompanying transcript: transcript extraction, efficient keyframe sampling, scene-aware frame selection, transcript-guided visual references, frame deduplication, and multimodal analysis.
+Production-oriented video understanding based on transcript-aware frame selection.
 
-## Status
+## What it does
 
-This repository is an MVP. Expensive video work happens locally and is turned into a timestamp-aligned analysis manifest. The `understand` command can then send that bundle to an OpenAI-compatible multimodal chat endpoint.
+frameview combines:
 
-## Features
+- existing captions when available
+- optional local speech-to-text with `faster-whisper`
+- efficient keyframe extraction
+- scene-change detection
+- transcript-guided visual references such as “look here” / “as you can see”
+- lightweight frame deduplication
+- multimodal LLM analysis
 
-- `transcript`: transcript-only analysis input.
-- `efficient`: extract existing keyframes (I-frames) for fast, cheap visual coverage.
-- `balanced`: combine keyframes, scene changes, and transcript visual references.
-- `token-burner`: retain all strong visual candidates with no hard frame cap.
-- Timestamp-aware transcript ingestion from SRT/VTT.
-- Optional speech-to-text via `faster-whisper`.
-- Low-resolution average hashing for cheap frame deduplication.
-- JSON manifest output suitable for downstream multimodal models.
-- OpenAI-compatible multimodal inference via `frameview understand`.
+The pipeline is local-first: video decoding and frame selection happen locally, while only the selected transcript and frames are sent to the configured model endpoint.
 
-## Requirements
+## Install
 
-- Python 3.11+
-- FFmpeg (`ffmpeg` and `ffprobe`) on `PATH`
-
-Optional:
-
-- `pip install -e '.[stt]'` for local speech-to-text with faster-whisper.
-
-## Quick start
+Core + API server + URL support:
 
 ```bash
-pip install -e .
+pip install -e '.[server,url]'
+```
+
+For local STT too:
+
+```bash
+pip install -e '.[all]'
+```
+
+System requirement: FFmpeg (`ffmpeg` and `ffprobe`) must be on `PATH`.
+
+## CLI
+
+Local file:
+
+```bash
 frameview analyze ./video.mp4 --mode balanced --output analysis.json
 ```
 
-With a transcript:
+Remote URL:
 
 ```bash
-frameview analyze ./video.mp4 --transcript ./video.vtt --mode balanced
+frameview understand 'https://example.com/video' --mode balanced --max-frames 80
 ```
 
-Extract only the frames selected by the pipeline:
+The `understand` command needs `FRAMEVIEW_API_KEY` unless `--api-key` is supplied.
+
+## HTTP API
+
+Start locally:
 
 ```bash
-frameview frames ./video.mp4 --manifest analysis.json --output-dir ./frames
+uvicorn frameview.server:app --host 0.0.0.0 --port 8000
 ```
 
-### Multimodal understanding
-
-Set an API key and run the end-to-end pipeline:
+Optional API protection:
 
 ```bash
-export FRAMEVIEW_API_KEY="..."
-frameview understand ./video.mp4 \
-  --mode balanced \
-  --model gpt-4.1-mini \
-  --max-frames 80
+export FRAMEVIEW_SERVER_API_KEY='change-me'
+export FRAMEVIEW_API_KEY='model-secret'
 ```
 
-The default endpoint is an OpenAI-compatible `/v1/chat/completions` endpoint. For another compatible provider, override it with `--endpoint` and pass the provider's model name with `--model`.
-
-For a transcript already available locally:
+Create a job:
 
 ```bash
-frameview understand ./video.mp4 \
-  --transcript ./video.vtt \
-  --mode balanced
+curl -X POST http://localhost:8000/v1/watch \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer change-me' \
+  -d '{"source":"https://www.youtube.com/watch?v=...","mode":"balanced"}'
 ```
 
-The command extracts selected frames, deduplicates them, aligns them with the transcript, and sends text plus images to the multimodal model. It returns both the model analysis and the final manifest as JSON.
+Poll it:
 
-## Design
+```bash
+curl http://localhost:8000/v1/jobs/JOB_ID \
+  -H 'Authorization: Bearer change-me'
+```
 
-The core pipeline is:
+The server uses SQLite for durable job metadata and a bounded local worker pool. It is intended for a single application instance. For multi-instance deployments, place the API behind a queue/worker system rather than relying on the in-process executor.
+
+## Production configuration
+
+Important environment variables:
 
 ```text
-video
-  ├─> transcript (captions first, optional STT fallback)
-  └─> frame candidates
-        ├─ keyframes
-        ├─ scene changes
-        └─ transcript visual references
-               ↓
-          frame extraction
-               ↓
-          deduplication
-               ↓
-        timestamp alignment
-               ↓
-        multimodal model
+FRAMEVIEW_SERVER_API_KEY       API auth; unset disables API auth
+FRAMEVIEW_API_KEY              model provider key
+FRAMEVIEW_LLM_ENDPOINT         server-owned OpenAI-compatible endpoint
+FRAMEVIEW_WORKERS              in-process concurrent jobs (default 2)
+FRAMEVIEW_WORKDIR              job/video storage root
+FRAMEVIEW_DB                   SQLite path
+FRAMEVIEW_MAX_DURATION_SECONDS maximum remote video duration (default 10800)
+FRAMEVIEW_MAX_DOWNLOAD_BYTES  maximum remote download size (default 4 GiB)
+FRAMEVIEW_ALLOWED_HOSTS        optional comma-separated remote host allowlist
 ```
 
-Inference is kept behind a small provider-agnostic HTTP adapter, so the deterministic video selection logic remains independent of one AI vendor.
+The LLM endpoint is deliberately server-configured rather than accepted from clients, so a caller cannot redirect the server-side model secret to an arbitrary endpoint.
+
+Remote URL ingestion validates destination IPs and refuses loopback, private, link-local, multicast, reserved, and unspecified addresses. For a hardened deployment, use `FRAMEVIEW_ALLOWED_HOSTS` as an explicit allowlist.
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+Persistent data lives in the `frameview-data` volume.
+
+## Architecture
+
+```text
+URL / local file
+      │
+      ├── captions first
+      │      └── STT fallback
+      │
+      └── video
+            ├── keyframes
+            ├── scene changes
+            └── transcript visual references
+                       ↓
+                  merge + dedupe
+                       ↓
+                timestamp manifest
+                       ↓
+                selected JPEG frames
+                       ↓
+                 multimodal LLM
+                       ↓
+                    result
+```
+
+The current implementation intentionally keeps the LLM transport OpenAI-compatible. That makes the analysis layer usable with OpenAI and compatible gateways without coupling the frame-selection engine to one vendor.
