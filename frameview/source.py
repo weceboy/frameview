@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import re
 import socket
 import tempfile
 from pathlib import Path
@@ -15,7 +14,8 @@ class SourceError(RuntimeError):
 
 def is_url(value: str) -> bool:
     try:
-        return urlparse(value).scheme in {"http", "https"} and bool(urlparse(value).netloc)
+        parsed = urlparse(value)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
     except ValueError:
         return False
 
@@ -25,10 +25,9 @@ def _validate_url(url: str) -> None:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise SourceError("Source must be a local file or an http(s) URL")
     host = parsed.hostname.lower().rstrip(".")
-    if os.getenv("FRAMEVIEW_ALLOWED_HOSTS"):
-        allowed = {x.strip().lower() for x in os.getenv("FRAMEVIEW_ALLOWED_HOSTS", "").split(",") if x.strip()}
-        if host not in allowed:
-            raise SourceError(f"Host is not allowlisted: {host}")
+    allowed = {x.strip().lower() for x in os.getenv("FRAMEVIEW_ALLOWED_HOSTS", "").split(",") if x.strip()}
+    if allowed and host not in allowed:
+        raise SourceError(f"Host is not allowlisted: {host}")
     try:
         addresses = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
     except OSError as exc:
@@ -39,13 +38,14 @@ def _validate_url(url: str) -> None:
             raise SourceError("Refusing to fetch a private or local network address")
 
 
-def _find_caption(directory: Path, stem: str) -> Path | None:
-    candidates = sorted(directory.glob(f"{stem}*.vtt")) + sorted(directory.glob(f"{stem}*.srt"))
-    return candidates[0] if candidates else None
+def _limits() -> tuple[int, int]:
+    max_duration = int(os.getenv("FRAMEVIEW_MAX_DURATION_SECONDS", str(3 * 60 * 60)))
+    max_bytes = int(os.getenv("FRAMEVIEW_MAX_DOWNLOAD_BYTES", str(4 * 1024 * 1024 * 1024)))
+    return max_duration, max_bytes
 
 
 def download_source(url: str, workdir: str | Path, *, languages: tuple[str, ...] = ("en", "de")) -> tuple[Path, Path | None]:
-    """Download a remote video and captions using yt-dlp, captions first when available."""
+    """Download one remote video with captions preferred and resource limits enforced."""
     _validate_url(url)
     try:
         import yt_dlp
@@ -55,8 +55,7 @@ def download_source(url: str, workdir: str | Path, *, languages: tuple[str, ...]
     root = Path(workdir)
     root.mkdir(parents=True, exist_ok=True)
     output = root / "source.%(ext)s"
-    subtitle_output = root / "captions.%(ext)s"
-
+    max_duration, max_bytes = _limits()
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -72,12 +71,20 @@ def download_source(url: str, workdir: str | Path, *, languages: tuple[str, ...]
         "concurrent_fragment_downloads": 4,
         "overwrites": True,
     }
-    # Subtitle files are written using the video template; discover them afterwards.
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=False)
             if not info:
                 raise SourceError("yt-dlp returned no source metadata")
+            duration = float(info.get("duration") or 0)
+            approx_size = int(info.get("filesize") or info.get("filesize_approx") or 0)
+            if duration and duration > max_duration:
+                raise SourceError(f"Video duration {duration:.0f}s exceeds limit {max_duration}s")
+            if approx_size and approx_size > max_bytes:
+                raise SourceError(f"Estimated download size exceeds limit of {max_bytes} bytes")
+            ydl.download([url])
+    except SourceError:
+        raise
     except Exception as exc:
         raise SourceError(f"Could not download source: {exc}") from exc
 
@@ -85,6 +92,8 @@ def download_source(url: str, workdir: str | Path, *, languages: tuple[str, ...]
     if not videos:
         raise SourceError("yt-dlp downloaded no playable video")
     video = max(videos, key=lambda p: p.stat().st_size)
+    if video.stat().st_size > max_bytes:
+        raise SourceError(f"Downloaded file exceeds limit of {max_bytes} bytes")
     caption = next((p for p in root.glob("*.vtt") if p.is_file()), None)
     if caption is None:
         caption = next((p for p in root.glob("*.srt") if p.is_file()), None)
