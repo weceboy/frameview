@@ -10,7 +10,6 @@ from typing import Iterable
 
 from .models import AnalysisManifest, FrameCandidate
 
-
 DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4.1-mini"
 
@@ -46,6 +45,8 @@ def analyze_manifest(
 
     selected = list(manifest.frames)
     if max_frames is not None:
+        if max_frames < 1:
+            raise ValueError("max_frames must be positive")
         selected = selected[:max_frames]
 
     content: list[dict] = [{"type": "text", "text": instruction}]
@@ -58,17 +59,17 @@ def analyze_manifest(
     })
 
     for frame in _frame_context(selected):
-        content.append({"type": "text", "text": f"Frame at {frame['timestamp']:.3f}s; reasons: {', '.join(frame['reasons']) or 'selected'}"})
+        content.append({
+            "type": "text",
+            "text": f"Frame at {frame['timestamp']:.3f}s; reasons: {', '.join(frame['reasons']) or 'selected'}",
+        })
         if "image" in frame:
             content.append({"type": "image_url", "image_url": {"url": frame["image"]}})
 
     payload = {
         "model": model,
         "temperature": 0.2,
-        "messages": [{
-            "role": "user",
-            "content": content,
-        }],
+        "messages": [{"role": "user", "content": content}],
     }
     request = urllib.request.Request(
         endpoint,
